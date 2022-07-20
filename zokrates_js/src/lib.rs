@@ -1,8 +1,14 @@
+mod util;
+
+#[macro_use]
+extern crate lazy_static;
+
+use crate::util::normalize_path;
 use serde::{Deserialize, Serialize};
 use serde_json::to_string_pretty;
 use std::convert::TryFrom;
-use std::io::Cursor;
-use std::path::PathBuf;
+use std::io::{Cursor, Write};
+use std::path::{Component, PathBuf};
 use typed_arena::Arena;
 use wasm_bindgen::prelude::*;
 use zokrates_abi::{parse_strict, Decode, Encode, Inputs};
@@ -25,6 +31,11 @@ use zokrates_proof_systems::{
     SolidityCompatibleField, SolidityCompatibleScheme, TaggedKeypair, TaggedProof,
     UniversalBackend, UniversalScheme, GM17,
 };
+
+lazy_static! {
+    static ref STDLIB: serde_json::Value =
+        serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/stdlib.json"))).unwrap();
+}
 
 #[wasm_bindgen]
 pub struct CompilationResult {
@@ -99,29 +110,95 @@ impl<'a> Resolver<Error> for JsResolver<'a> {
         current_location: PathBuf,
         import_location: PathBuf,
     ) -> Result<(String, PathBuf), Error> {
-        let value = self
-            .callback
-            .call2(
-                &JsValue::UNDEFINED,
-                &current_location.to_str().unwrap().into(),
-                &import_location.to_str().unwrap().into(),
-            )
-            .map_err(|_| {
-                Error::new(format!(
-                    "Could not resolve `{}`: error thrown in resolve callback",
-                    import_location.display()
-                ))
-            })?;
+        let base: PathBuf = match import_location.components().next() {
+            Some(Component::CurDir) | Some(Component::ParentDir) => {
+                current_location.parent().unwrap().into()
+            }
+            _ => PathBuf::default(),
+        };
 
-        if value.is_null() || value.is_undefined() {
-            Err(Error::new(format!(
-                "Could not resolve `{}`",
-                import_location.display()
-            )))
-        } else {
-            let result: ResolverResult = value.into_serde().unwrap();
-            Ok((result.source, PathBuf::from(result.location)))
+        let path = base.join(import_location.clone()).with_extension("zok");
+
+        match path.components().next() {
+            Some(Component::Normal(_)) => {
+                let path_normalized = normalize_path(path);
+                let source = STDLIB
+                    .get(&path_normalized.to_str().unwrap())
+                    .ok_or_else(|| {
+                        Error::new(format!(
+                            "module `{}` not found in stdlib",
+                            import_location.display()
+                        ))
+                    })?
+                    .as_str()
+                    .unwrap();
+
+                Ok((source.to_owned(), path_normalized))
+            }
+            _ => {
+                let value = self
+                    .callback
+                    .call2(
+                        &JsValue::UNDEFINED,
+                        &current_location.to_str().unwrap().into(),
+                        &import_location.to_str().unwrap().into(),
+                    )
+                    .map_err(|_| {
+                        Error::new(format!(
+                            "could not resolve module `{}`",
+                            import_location.display()
+                        ))
+                    })?;
+
+                if value.is_null() || value.is_undefined() {
+                    return Err(Error::new(format!(
+                        "could not resolve module `{}`",
+                        import_location.display()
+                    )));
+                }
+
+                let result: serde_json::Value = value.into_serde().unwrap();
+                let source = result
+                    .get("source")
+                    .ok_or_else(|| Error::new("missing field `source`"))?
+                    .as_str()
+                    .ok_or_else(|| {
+                        Error::new("invalid type for field `source`, should be a string")
+                    })?;
+
+                let location = result
+                    .get("location")
+                    .ok_or_else(|| Error::new("missing field `location`"))?
+                    .as_str()
+                    .ok_or_else(|| {
+                        Error::new("invalid type for field `location`, should be a string")
+                    })?;
+
+                Ok((source.to_owned(), PathBuf::from(location.to_owned())))
+            }
         }
+    }
+}
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+}
+
+#[derive(Default)]
+pub struct ConsoleWriter {
+    buf: Vec<u8>,
+}
+
+impl Write for ConsoleWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buf.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        log(std::str::from_utf8(&self.buf.as_slice()[..self.buf.len() - 1]).unwrap());
+        self.buf.clear();
+        Ok(())
     }
 }
 
@@ -223,8 +300,9 @@ mod internal {
 
         let public_inputs = program.public_inputs();
 
+        let mut writer = ConsoleWriter::default();
         let witness = interpreter
-            .execute(program, &inputs.encode())
+            .execute_with_log_stream(program, &inputs.encode(), &mut writer)
             .map_err(|err| JsValue::from_str(&format!("Execution failed: {}", err)))?;
 
         let return_values: serde_json::Value =
@@ -652,6 +730,13 @@ pub fn format_proof(proof: JsValue) -> Result<JsValue, JsValue> {
         }
         _ => Err(JsValue::from_str("Unsupported options")),
     }
+}
+
+#[wasm_bindgen]
+pub fn metadata() -> JsValue {
+    let value: serde_json::Value =
+        serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/metadata.json"))).unwrap();
+    JsValue::from_serde(&value).unwrap()
 }
 
 #[wasm_bindgen(start)]

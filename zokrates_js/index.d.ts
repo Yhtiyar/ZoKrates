@@ -12,6 +12,7 @@ declare module "zokrates-js" {
 
   export interface CompileConfig {
     isolate_branches?: boolean;
+    debug?: boolean;
   }
 
   export interface CompileOptions {
@@ -91,6 +92,7 @@ declare module "zokrates-js" {
     utils: {
       formatProof(proof: Proof): any[];
     };
+    metadata(): Metadata;
   }
 
   export interface Metadata {
@@ -98,5 +100,4 @@ declare module "zokrates-js" {
   }
 
   export function initialize(): Promise<ZoKratesProvider>;
-  export var metadata: Metadata;
 }

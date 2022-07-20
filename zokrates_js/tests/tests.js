@@ -14,9 +14,11 @@ describe("tests", () => {
   before(() => {
     return initialize().then((defaultProvider) => {
       zokratesProvider = defaultProvider;
-      return fs.promises.mkdtemp(path.join(os.tmpdir(), path.sep)).then((folder) => {
-        tmpFolder = folder;
-      });
+      return fs.promises
+        .mkdtemp(path.join(os.tmpdir(), path.sep))
+        .then((folder) => {
+          tmpFolder = folder;
+        });
     });
   });
 
@@ -27,7 +29,6 @@ describe("tests", () => {
   describe("compilation", () => {
     it("should compile", () => {
       assert.doesNotThrow(() => {
-
         const artifacts = zokratesProvider.compile(
           "def main() -> field { return 42; }"
         );
@@ -52,11 +53,8 @@ describe("tests", () => {
     });
 
     it("should resolve stdlib module", () => {
-      const stdlib = require("../stdlib.js");
       assert.doesNotThrow(() => {
-        const code = `import "${
-          Object.keys(stdlib)[0]
-        }" as func;\ndef main() { return; }`;
+        const code = `import "utils/pack/bool/unpack" as unpack;\ndef main() { return; }`;
         zokratesProvider.compile(code);
       });
     });
@@ -64,7 +62,7 @@ describe("tests", () => {
     it("should resolve user module", () => {
       assert.doesNotThrow(() => {
         const code =
-          'import "test" as test;\ndef main() -> field { return test(); }';
+          'import "./test" as test;\ndef main() -> field { return test(); }';
         const options = {
           resolveCallback: (_, path) => {
             return {
@@ -80,7 +78,7 @@ describe("tests", () => {
     it("should throw on unresolved module", () => {
       assert.throws(() => {
         const code =
-          'import "test" as test;\ndef main() -> field { return test(); }';
+          'import "./test" as test;\ndef main() -> field { return test(); }';
         zokratesProvider.compile(code);
       });
     });
